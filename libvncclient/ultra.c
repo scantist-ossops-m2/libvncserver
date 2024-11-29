@@ -66,6 +66,8 @@ HandleUltraBPP (rfbClient* client, int rx, int ry, int rw, int rh)
     if ((client->raw_buffer_size % 4)!=0)
       client->raw_buffer_size += (4-(client->raw_buffer_size % 4));
     client->raw_buffer = (char*) malloc( client->raw_buffer_size );
+    if(client->raw_buffer == NULL)
+      return FALSE;
   }
   
   /* allocate enough space to store the incoming compressed packet */
@@ -86,14 +88,14 @@ HandleUltraBPP (rfbClient* client, int rx, int ry, int rw, int rh)
 
   /* uncompress the data */
   uncompressedBytes = client->raw_buffer_size;
-  inflateResult = lzo1x_decompress(
+  inflateResult = lzo1x_decompress_safe(
               (lzo_byte *)client->ultra_buffer, toRead,
               (lzo_byte *)client->raw_buffer, (lzo_uintp) &uncompressedBytes,
               NULL);
   
-  
+  /* Note that uncompressedBytes will be 0 on output overrun */
   if ((rw * rh * (BPP / 8)) != uncompressedBytes)
-      rfbClientLog("Ultra decompressed too little (%d < %d)", (rw * rh * (BPP / 8)), uncompressedBytes);
+      rfbClientLog("Ultra decompressed unexpected amount of data (%d != %d)\n", (rw * rh * (BPP / 8)), uncompressedBytes);
   
   /* Put the uncompressed contents of the update on the screen. */
   if ( inflateResult == LZO_E_OK ) 
@@ -150,6 +152,8 @@ HandleUltraZipBPP (rfbClient* client, int rx, int ry, int rw, int rh)
     if ((client->raw_buffer_size % 4)!=0)
       client->raw_buffer_size += (4-(client->raw_buffer_size % 4));
     client->raw_buffer = (char*) malloc( client->raw_buffer_size );
+    if(client->raw_buffer == NULL)
+	return FALSE;
   }
 
  
@@ -168,7 +172,7 @@ HandleUltraZipBPP (rfbClient* client, int rx, int ry, int rw, int rh)
 
   /* uncompress the data */
   uncompressedBytes = client->raw_buffer_size;
-  inflateResult = lzo1x_decompress(
+  inflateResult = lzo1x_decompress_safe(
               (lzo_byte *)client->ultra_buffer, toRead,
               (lzo_byte *)client->raw_buffer, &uncompressedBytes, NULL);
   if ( inflateResult != LZO_E_OK ) 

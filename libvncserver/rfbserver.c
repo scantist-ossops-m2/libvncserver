@@ -72,6 +72,8 @@
 #include <errno.h>
 /* strftime() */
 #include <time.h>
+/* INT_MAX */
+#include <limits.h>
 
 #ifdef __MINGW32__
 static int compat_mkdir(const char *path, int mode)
@@ -1297,7 +1299,7 @@ char *rfbProcessFileTransferReadBuffer(rfbClientPtr cl, uint32_t length)
        will safely be allocated since this check will never trigger and malloc() can digest length+1
        without problems as length is a uint32_t.
     */
-    if(length == SIZE_MAX) {
+    if(length == SIZE_MAX || length > INT_MAX) {
 	rfbErr("rfbProcessFileTransferReadBuffer: too big file transfer length requested: %u", (unsigned int)length);
 	rfbCloseClient(cl);
 	return NULL;

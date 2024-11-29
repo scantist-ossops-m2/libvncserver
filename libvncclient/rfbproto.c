@@ -136,8 +136,17 @@ void* rfbClientGetClientData(rfbClient* client, void* tag)
 
 /* messages */
 
+static boolean CheckRect(rfbClient* client, int x, int y, int w, int h) {
+  return x + w <= client->width && y + h <= client->height;
+}
+
 static void FillRectangle(rfbClient* client, int x, int y, int w, int h, uint32_t colour) {
   int i,j;
+
+  if (!CheckRect(client, x, y, w, h)) {
+    rfbClientLog("Rect out of bounds: %dx%d at (%d, %d)\n", x, y, w, h);
+    return;
+  }
 
 #define FILL_RECT(BPP) \
     for(j=y*client->width;j<(y+h)*client->width;j+=client->width) \
@@ -155,6 +164,11 @@ static void FillRectangle(rfbClient* client, int x, int y, int w, int h, uint32_
 
 static void CopyRectangle(rfbClient* client, uint8_t* buffer, int x, int y, int w, int h) {
   int j;
+
+  if (!CheckRect(client, x, y, w, h)) {
+    rfbClientLog("Rect out of bounds: %dx%d at (%d, %d)\n", x, y, w, h);
+    return;
+  }
 
 #define COPY_RECT(BPP) \
   { \
@@ -177,6 +191,16 @@ static void CopyRectangle(rfbClient* client, uint8_t* buffer, int x, int y, int 
 /* TODO: test */
 static void CopyRectangleFromRectangle(rfbClient* client, int src_x, int src_y, int w, int h, int dest_x, int dest_y) {
   int i,j;
+
+  if (!CheckRect(client, src_x, src_y, w, h)) {
+    rfbClientLog("Source rect out of bounds: %dx%d at (%d, %d)\n", src_x, src_y, w, h);
+    return;
+  }
+
+  if (!CheckRect(client, dest_x, dest_y, w, h)) {
+    rfbClientLog("Dest rect out of bounds: %dx%d at (%d, %d)\n", dest_x, dest_y, w, h);
+    return;
+  }
 
 #define COPY_RECT_FROM_RECT(BPP) \
   { \
@@ -298,6 +322,7 @@ ClearServer2Client(rfbClient* client, int messageType)
   client->supportedMessages.server2client[((messageType & 0xFF)/8)] &= (!(1<<(messageType % 8)));
 }
 
+#define MAX_TEXTCHAT_SIZE 10485760 /* 10MB */
 
 void
 DefaultSupportedMessages(rfbClient* client)
@@ -485,11 +510,29 @@ rfbBool ConnectToRFBRepeater(rfbClient* client,const char *repeaterHost, int rep
 extern void rfbClientEncryptBytes(unsigned char* bytes, char* passwd);
 extern void rfbClientEncryptBytes2(unsigned char *where, const int length, unsigned char *key);
 
+static void
+ReadReason(rfbClient* client)
+{
+    uint32_t reasonLen;
+    char *reason;
+
+    if (!ReadFromRFBServer(client, (char *)&reasonLen, 4)) return;
+    reasonLen = rfbClientSwap32IfLE(reasonLen);
+    if(reasonLen > 1<<20) {
+      rfbClientLog("VNC connection failed, but sent reason length of %u exceeds limit of 1MB",(unsigned int)reasonLen);
+      return;
+    }
+    reason = malloc(reasonLen+1);
+    if (!ReadFromRFBServer(client, reason, reasonLen)) { free(reason); return; }
+    reason[reasonLen]=0;
+    rfbClientLog("VNC connection failed: %s\n",reason);
+    free(reason);
+}
+
 rfbBool
 rfbHandleAuthResult(rfbClient* client)
 {
-    uint32_t authResult=0, reasonLen=0;
-    char *reason=NULL;
+    uint32_t authResult=0;
 
     if (!ReadFromRFBServer(client, (char *)&authResult, 4)) return FALSE;
 
@@ -504,13 +547,7 @@ rfbHandleAuthResult(rfbClient* client)
       if (client->major==3 && client->minor>7)
       {
         /* we have an error following */
-        if (!ReadFromRFBServer(client, (char *)&reasonLen, 4)) return FALSE;
-        reasonLen = rfbClientSwap32IfLE(reasonLen);
-        reason = malloc(reasonLen+1);
-        if (!ReadFromRFBServer(client, reason, reasonLen)) { free(reason); return FALSE; }
-        reason[reasonLen]=0;
-        rfbClientLog("VNC connection failed: %s\n",reason);
-        free(reason);
+        ReadReason(client);
         return FALSE;
       }
       rfbClientLog("VNC authentication failed\n");
@@ -525,21 +562,6 @@ rfbHandleAuthResult(rfbClient* client)
     return FALSE;
 }
 
-static void
-ReadReason(rfbClient* client)
-{
-    uint32_t reasonLen;
-    char *reason;
-
-    /* we have an error following */
-    if (!ReadFromRFBServer(client, (char *)&reasonLen, 4)) return;
-    reasonLen = rfbClientSwap32IfLE(reasonLen);
-    reason = malloc(reasonLen+1);
-    if (!ReadFromRFBServer(client, reason, reasonLen)) { free(reason); return; }
-    reason[reasonLen]=0;
-    rfbClientLog("VNC connection failed: %s\n",reason);
-    free(reason);
-}
 
 static rfbBool
 ReadSupportedSecurityType(rfbClient* client, uint32_t *result, rfbBool subAuth)
@@ -1266,10 +1288,13 @@ rfbBool
 SetFormatAndEncodings(rfbClient* client)
 {
   rfbSetPixelFormatMsg spf;
-  char buf[sz_rfbSetEncodingsMsg + MAX_ENCODINGS * 4];
+  union {
+    char bytes[sz_rfbSetEncodingsMsg + MAX_ENCODINGS*4];
+    rfbSetEncodingsMsg msg;
+  } buf;
 
-  rfbSetEncodingsMsg *se = (rfbSetEncodingsMsg *)buf;
-  uint32_t *encs = (uint32_t *)(&buf[sz_rfbSetEncodingsMsg]);
+  rfbSetEncodingsMsg *se = &buf.msg;
+  uint32_t *encs = (uint32_t *)(&buf.bytes[sz_rfbSetEncodingsMsg]);
   int len = 0;
   rfbBool requestCompressLevel = FALSE;
   rfbBool requestQualityLevel = FALSE;
@@ -1463,7 +1488,7 @@ SetFormatAndEncodings(rfbClient* client)
 
   se->nEncodings = rfbClientSwap16IfLE(se->nEncodings);
 
-  if (!WriteToRFBServer(client, buf, len)) return FALSE;
+  if (!WriteToRFBServer(client, buf.bytes, len)) return FALSE;
 
   return TRUE;
 }
@@ -1678,6 +1703,7 @@ SendKeyEvent(rfbClient* client, uint32_t key, rfbBool down)
 
   if (!SupportsClient2Server(client, rfbKeyEvent)) return TRUE;
 
+  memset(&ke, 0, sizeof(ke));
   ke.type = rfbKeyEvent;
   ke.down = down ? 1 : 0;
   ke.key = rfbClientSwap32IfLE(key);
@@ -1696,6 +1722,7 @@ SendClientCutText(rfbClient* client, char *str, int len)
 
   if (!SupportsClient2Server(client, rfbClientCutText)) return TRUE;
 
+  memset(&cct, 0, sizeof(cct));
   cct.type = rfbClientCutText;
   cct.length = rfbClientSwap32IfLE(len);
   return  (WriteToRFBServer(client, (char *)&cct, sz_rfbClientCutTextMsg) &&
@@ -1906,9 +1933,12 @@ HandleRFBServerMessage(rfbClient* client)
 	int y=rect.r.y, h=rect.r.h;
 
 	bytesPerLine = rect.r.w * client->format.bitsPerPixel / 8;
-	linesToRead = RFB_BUFFER_SIZE / bytesPerLine;
+	/* RealVNC 4.x-5.x on OSX can induce bytesPerLine==0, 
+	   usually during GPU accel. */
+	/* Regardless of cause, do not divide by zero. */
+	linesToRead = bytesPerLine ? (RFB_BUFFER_SIZE / bytesPerLine) : 0;
 
-	while (h > 0) {
+	while (linesToRead && h > 0) {
 	  if (linesToRead > h)
 	    linesToRead = h;
 
@@ -2179,10 +2209,17 @@ HandleRFBServerMessage(rfbClient* client)
 
     msg.sct.length = rfbClientSwap32IfLE(msg.sct.length);
 
+    if (msg.sct.length > 1<<20) {
+	    rfbClientErr("Ignoring too big cut text length sent by server: %u B > 1 MB\n", (unsigned int)msg.sct.length);
+	    return FALSE;
+    }  
+
     buffer = malloc(msg.sct.length+1);
 
-    if (!ReadFromRFBServer(client, buffer, msg.sct.length))
+    if (!ReadFromRFBServer(client, buffer, msg.sct.length)) {
+      free(buffer);
       return FALSE;
+    }
 
     buffer[msg.sct.length] = 0;
 
@@ -2218,6 +2255,8 @@ HandleRFBServerMessage(rfbClient* client)
               client->HandleTextChat(client, (int)rfbTextChatFinished, NULL);
           break;
       default:
+	  if(msg.tc.length > MAX_TEXTCHAT_SIZE)
+	      return FALSE;
           buffer=malloc(msg.tc.length+1);
           if (!ReadFromRFBServer(client, buffer, msg.tc.length))
           {

@@ -147,8 +147,17 @@ void* rfbClientGetClientData(rfbClient* client, void* tag)
 
 /* messages */
 
+static boolean CheckRect(rfbClient* client, int x, int y, int w, int h) {
+  return x + w <= client->width && y + h <= client->height;
+}
+
 static void FillRectangle(rfbClient* client, int x, int y, int w, int h, uint32_t colour) {
   int i,j;
+
+  if (!CheckRect(client, x, y, w, h)) {
+    rfbClientLog("Rect out of bounds: %dx%d at (%d, %d)\n", x, y, w, h);
+    return;
+  }
 
 #define FILL_RECT(BPP) \
     for(j=y*client->width;j<(y+h)*client->width;j+=client->width) \
@@ -169,6 +178,11 @@ static void CopyRectangle(rfbClient* client, uint8_t* buffer, int x, int y, int 
 
   if (client->frameBuffer == NULL) {
       return;
+  }
+
+  if (!CheckRect(client, x, y, w, h)) {
+    rfbClientLog("Rect out of bounds: %dx%d at (%d, %d)\n", x, y, w, h);
+    return;
   }
 
 #define COPY_RECT(BPP) \
@@ -192,6 +206,16 @@ static void CopyRectangle(rfbClient* client, uint8_t* buffer, int x, int y, int 
 /* TODO: test */
 static void CopyRectangleFromRectangle(rfbClient* client, int src_x, int src_y, int w, int h, int dest_x, int dest_y) {
   int i,j;
+
+  if (!CheckRect(client, src_x, src_y, w, h)) {
+    rfbClientLog("Source rect out of bounds: %dx%d at (%d, %d)\n", src_x, src_y, w, h);
+    return;
+  }
+
+  if (!CheckRect(client, dest_x, dest_y, w, h)) {
+    rfbClientLog("Dest rect out of bounds: %dx%d at (%d, %d)\n", dest_x, dest_y, w, h);
+    return;
+  }
 
 #define COPY_RECT_FROM_RECT(BPP) \
   { \
@@ -316,6 +340,7 @@ ClearServer2Client(rfbClient* client, int messageType)
   client->supportedMessages.server2client[((messageType & 0xFF)/8)] &= (!(1<<(messageType % 8)));
 }
 
+#define MAX_TEXTCHAT_SIZE 10485760 /* 10MB */
 
 void
 DefaultSupportedMessages(rfbClient* client)
@@ -1285,10 +1310,13 @@ rfbBool
 SetFormatAndEncodings(rfbClient* client)
 {
   rfbSetPixelFormatMsg spf;
-  char buf[sz_rfbSetEncodingsMsg + MAX_ENCODINGS * 4];
+  union {
+    char bytes[sz_rfbSetEncodingsMsg + MAX_ENCODINGS*4];
+    rfbSetEncodingsMsg msg;
+  } buf;
 
-  rfbSetEncodingsMsg *se = (rfbSetEncodingsMsg *)buf;
-  uint32_t *encs = (uint32_t *)(&buf[sz_rfbSetEncodingsMsg]);
+  rfbSetEncodingsMsg *se = &buf.msg;
+  uint32_t *encs = (uint32_t *)(&buf.bytes[sz_rfbSetEncodingsMsg]);
   int len = 0;
   rfbBool requestCompressLevel = FALSE;
   rfbBool requestQualityLevel = FALSE;
@@ -1492,7 +1520,7 @@ SetFormatAndEncodings(rfbClient* client)
 
   se->nEncodings = rfbClientSwap16IfLE(se->nEncodings);
 
-  if (!WriteToRFBServer(client, buf, len)) return FALSE;
+  if (!WriteToRFBServer(client, buf.bytes, len)) return FALSE;
 
   return TRUE;
 }
@@ -2256,6 +2284,8 @@ HandleRFBServerMessage(rfbClient* client)
               client->HandleTextChat(client, (int)rfbTextChatFinished, NULL);
           break;
       default:
+	  if(msg.tc.length > MAX_TEXTCHAT_SIZE)
+	      return FALSE;
           buffer=malloc(msg.tc.length+1);
           if (!ReadFromRFBServer(client, buffer, msg.tc.length))
           {

@@ -340,6 +340,7 @@ ClearServer2Client(rfbClient* client, int messageType)
   client->supportedMessages.server2client[((messageType & 0xFF)/8)] &= (!(1<<(messageType % 8)));
 }
 
+#define MAX_TEXTCHAT_SIZE 10485760 /* 10MB */
 
 void
 DefaultSupportedMessages(rfbClient* client)
@@ -2280,6 +2281,8 @@ HandleRFBServerMessage(rfbClient* client)
               client->HandleTextChat(client, (int)rfbTextChatFinished, NULL);
           break;
       default:
+	  if(msg.tc.length > MAX_TEXTCHAT_SIZE)
+	      return FALSE;
           buffer=malloc(msg.tc.length+1);
           if (!ReadFromRFBServer(client, buffer, msg.tc.length))
           {

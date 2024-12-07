@@ -1702,6 +1702,7 @@ SendKeyEvent(rfbClient* client, uint32_t key, rfbBool down)
 
   if (!SupportsClient2Server(client, rfbKeyEvent)) return TRUE;
 
+  memset(&ke, 0, sizeof(ke));
   ke.type = rfbKeyEvent;
   ke.down = down ? 1 : 0;
   ke.key = rfbClientSwap32IfLE(key);
@@ -1720,6 +1721,7 @@ SendClientCutText(rfbClient* client, char *str, int len)
 
   if (!SupportsClient2Server(client, rfbClientCutText)) return TRUE;
 
+  memset(&cct, 0, sizeof(cct));
   cct.type = rfbClientCutText;
   cct.length = rfbClientSwap32IfLE(len);
   return  (WriteToRFBServer(client, (char *)&cct, sz_rfbClientCutTextMsg) &&

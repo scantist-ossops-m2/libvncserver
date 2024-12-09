@@ -1971,7 +1971,7 @@ HandleRFBServerMessage(rfbClient* client)
 	/* Regardless of cause, do not divide by zero. */
 	linesToRead = bytesPerLine ? (RFB_BUFFER_SIZE / bytesPerLine) : 0;
 
-	while (h > 0) {
+	while (linesToRead && h > 0) {
 	  if (linesToRead > h)
 	    linesToRead = h;
 
